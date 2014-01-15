@@ -68,9 +68,6 @@
     <Compile Include="..\EFHooks.Tests\HookedDbContextTests.cs">
       <Link>HookedDbContextTests.cs</Link>
     </Compile>
-    <Compile Include="..\EFHooks.Tests\Hooks\HookEntityMetadataTests.cs">
-      <Link>Hooks\HookEntityMetadataTests.cs</Link>
-    </Compile>
     <Compile Include="..\EFHooks.Tests\Hooks\ISoftDeleted.cs">
       <Link>Hooks\ISoftDeleted.cs</Link>
     </Compile>

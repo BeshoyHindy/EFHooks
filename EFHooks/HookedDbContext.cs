@@ -30,6 +30,10 @@ namespace EFHooks
 		/// The hooks.
 		/// </summary>
         protected IList<HookDecorator> _hooks;
+		/// <summary>
+		/// The exception hooks.
+		/// </summary>
+        protected IList<IExceptionHook> _exceptionHooks;
 
 		/// <summary>
 		/// Initializes a new instance of the <see cref="HookedDbContext" /> class, initializing empty lists of hooks.
@@ -113,14 +117,10 @@ namespace EFHooks
 		/// </returns>
 		public override int SaveChanges()
 		{
-			var modifiedEntries = this.ChangeTracker.Entries()
-											.Where(x => x.State != EntityState.Unchanged && x.State != EntityState.Detached)
-											.Select(x => new HookedEntityEntry()
-											{
-												Entity = x.Entity,
-												PreSaveState = x.State
-											})
-											.ToArray();
+            var modifiedEntries = this.ChangeTracker.Entries()
+                                            .Where(x => x.State != EntityState.Unchanged && x.State != EntityState.Detached)
+                                            .Select(x => new HookedEntityEntry { Entry = x, PreSaveState = x.State })
+                                            .ToList();
 
 			ExecutePreActionHooks(modifiedEntries, false);//Regardless of validation (executing the hook possibly fixes validation errors)
 
@@ -131,27 +131,21 @@ namespace EFHooks
 				ExecutePreActionHooks(modifiedEntries, true);
 			}
 
-			var result = base.SaveChanges();
+            var changes = 0;
+            try
+            {
+                changes = base.SaveChanges();
+            }
+            catch (Exception e)
+            {
+                // Run all 'Exception' hooks
+                ExecuteExceptionHooks(e);
+                throw;
+            }
 
-			if (_hooks.Any(h => h is IPostActionHook))
-			{
-				foreach (var entityEntry in modifiedEntries)
-				{
-					var entry = entityEntry;
+            ExecutePostActionHooks(modifiedEntries);
 
-					//Obtains hooks that 'listen' to one or more Entity States
-					foreach (var hook in _hooks.Where( h => h is IPostActionHook )
-                        .Where(x => (x.Hook.HookStates & entry.PreSaveState) == entry.PreSaveState)
-                        .OrderByDescending(x => x.Order.HasValue).ThenBy(x => x.Order)                        
-                        )
-					{
-						var metadata = new HookEntityMetadata(entityEntry.PreSaveState, this);
-						hook.Hook.HookObject(entityEntry.Entity, metadata);
-					}
-				}
-			}
-
-			return result;
+			return changes;
 		}
 		/// <summary>
 		/// Executes the pre action hooks, filtered by <paramref name="requiresValidation"/>.
@@ -160,10 +154,10 @@ namespace EFHooks
 		/// <param name="requiresValidation">if set to <c>true</c> executes hooks that require validation, otherwise executes hooks that do NOT require validation.</param>
 		private void ExecutePreActionHooks(IEnumerable<HookedEntityEntry> modifiedEntries, bool requiresValidation)
 		{
-			foreach (var entityEntry in modifiedEntries)
-			{
-				var entry = entityEntry; //Prevents access to modified closure
+            if (!_hooks.Any(h => h is IPreActionHook)) return;
 
+			foreach (var entry in modifiedEntries)
+			{
                 // For each preaction hook ordered by Order where null values are last (since null means it doesn't matter what order they have)
 				foreach (
 					var hook in _hooks.Where( h => h.Hook is IPreActionHook )
@@ -171,15 +165,41 @@ namespace EFHooks
                         .OrderByDescending( x => x.Order.HasValue ).ThenBy( x => x.Order )
                         )
 				{
-					var metadata = new HookEntityMetadata(entityEntry.PreSaveState, this);
-					hook.Hook.HookObject(entityEntry.Entity, metadata);
-
-					if (metadata.HasStateChanged)
-					{
-						entityEntry.PreSaveState = metadata.State;
-					}
+                    var metadata = new HookEntityMetadata(entry.PreSaveState, this, entry.Entry);
+                    hook.Hook.HookObject(entry.Entry.Entity, metadata);
 				}
 			}
 		}
+
+        private void ExecutePostActionHooks(IEnumerable<HookedEntityEntry> modifiedEntries)
+        {
+            if (!_hooks.Any(h => h is IPostActionHook)) return;
+
+            foreach (var entityEntry in modifiedEntries)
+            {
+                var entry = entityEntry;
+
+                //Obtains hooks that 'listen' to one or more Entity States
+                foreach (var hook in _hooks.Where(h => h is IPostActionHook)
+                    .Where(x => (x.Hook.HookStates & entry.PreSaveState) == entry.PreSaveState)
+                    .OrderByDescending(x => x.Order.HasValue).ThenBy(x => x.Order)
+                    )
+                {
+                    var metadata = new HookEntityMetadata(entry.PreSaveState, this, entry.Entry);
+                    hook.Hook.HookObject(entry.Entry.Entity, metadata);
+                }
+            }
+
+        }
+
+        private void ExecuteExceptionHooks(Exception e)
+        {
+            if (_exceptionHooks.Count == 0) return;
+
+            foreach( var hook in _exceptionHooks )
+            {
+                hook.Exception(e, this);
+            }
+        }
 	}
 }
